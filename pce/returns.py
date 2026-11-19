@@ -8,3 +8,6 @@ def risky_returns(returns):
 
 def excess_returns(returns):
     return risky_returns(returns).sub(returns["RF"], axis=0)
+
+def sample_expected_returns(returns):
+    return returns.mean() * 52

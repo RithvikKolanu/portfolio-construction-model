@@ -1,13 +1,11 @@
 import pandas as pd
 import wrds
 
-from pce.config import TICKERS, START, END, OUT
+from pce.config import WRDS_USERNAME, TICKERS, START, END, OUT, MCAP_OUT
 
 
-def pull_returns():
-    db = wrds.Connection()
+def ticker_permnos(db):
     tickers = ", ".join(f"'{t}'" for t in TICKERS)
-
     ids = db.raw_sql(f"""
         select distinct on (ticker) ticker, permno
         from crsp.stksecurityinfohist
@@ -16,6 +14,12 @@ def pull_returns():
     """)
     missing = set(TICKERS) - set(ids["ticker"])
     assert not missing, f"not found in CRSP: {missing}"
+    return ids
+
+
+def pull_returns():
+    db = wrds.Connection(wrds_username=WRDS_USERNAME)
+    ids = ticker_permnos(db)
     print(ids)
 
     permnos = ", ".join(str(int(p)) for p in ids["permno"])
@@ -42,4 +46,29 @@ def pull_returns():
 def load_returns():
     if not OUT.exists():
         pull_returns()
-    return pd.read_parquet(OUT).rename_axis(columns=None)
+    returns = pd.read_parquet(OUT).rename_axis(columns=None) 
+    return returns[TICKERS + ["RF"]]
+
+
+def pull_market_caps():
+    db = wrds.Connection(wrds_username=WRDS_USERNAME)
+    ids = ticker_permnos(db)
+    permnos = ", ".join(str(int(p)) for p in ids["permno"])
+    caps = db.raw_sql(f"""
+        select distinct on (permno) permno, dlycaldt as date, dlycap as market_cap
+        from crsp.dsf_v2
+        where permno in ({permnos}) and dlycaldt <= '{END}'
+        order by permno, dlycaldt desc
+    """, date_cols=["date"])
+    db.close()
+
+    caps = caps.merge(ids, on="permno").set_index("ticker")[["date", "market_cap"]]
+    MCAP_OUT.parent.mkdir(exist_ok=True)
+    caps.to_parquet(MCAP_OUT)
+
+
+def load_market_weights():
+    if not MCAP_OUT.exists():
+        pull_market_caps()
+    caps = pd.read_parquet(MCAP_OUT)["market_cap"].astype(float)[TICKERS]
+    return caps / caps.sum()
